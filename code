@@ -1,0 +1,111 @@
+!pip install datasets
+!python -m datasets download squad_v2
+
+import torch
+from transformers import AutoModelForQuestionAnswering, AutoTokenizer
+
+Tmodel = 'deepset/roberta-large-squad2'
+model = AutoModelForQuestionAnswering.from_pretrained(Tmodel)
+tokenizer = AutoTokenizer.from_pretrained(Tmodel)
+
+def AQ(context, question):
+    inputs = tokenizer(question, context, return_tensors='pt', truncation=True, padding=True)
+
+    with torch.no_grad():
+        outputs = model(**inputs)
+
+    start = torch.argmax(outputs.start_logits, dim=1)
+    end = torch.argmax(outputs.end_logits, dim=1) + 1
+
+    ans = tokenizer.decode(inputs["input_ids"][0][start:end], skip_special_tokens=True)
+    return ans
+
+context_text = "ChatGPT is a large language model developed by OpenAI."
+question_text = "What is ChatGPT?"
+answer = AQ(context_text, question_text)
+print("Answer:", answer)
+#Or you can add context_text and question_text by using input()
+context_a=input('Enter Context:')
+question_a=input('Enter Question:')
+answer=AQ(context_a,question_a)
+print(f"Context: {context_a}")
+print(f"Question: {question_a}")
+print(f"Answer: {answer}")
+
+TO FIND ACCURACY
+
+!pip install datasets
+from transformers import AutoModelForQuestionAnswering, AutoTokenizer
+from datasets import load_dataset
+from tqdm import tqdm
+import torch
+import numpy as np
+import string
+import re
+
+
+Tmodel = 'deepset/roberta-large-squad2'
+model = AutoModelForQuestionAnswering.from_pretrained(Tmodel)
+tokenizer = AutoTokenizer.from_pretrained(Tmodel)
+
+def normalize_text(s):
+    s = s.lower()
+    s = re.sub(r'\b(a|an|the)\b', ' ', s)
+    s = ''.join(ch for ch in s if ch not in set(string.punctuation))
+    s = ' '.join(s.split())
+    return s
+
+def compute_f1(pred, truth):
+    pred_tokens = normalize_text(pred).split()
+    truth_tokens = normalize_text(truth).split()
+    common = set(pred_tokens) & set(truth_tokens)
+    if not common:
+        return 0
+    precision = len(common) / len(pred_tokens)
+    recall = len(common) / len(truth_tokens)
+    return 2 * (precision * recall) / (precision + recall)
+
+def AQ_with_threshold(context, question, threshold=0.5):
+    inputs = tokenizer(question, context, return_tensors='pt', truncation=True, padding=True)
+    with torch.no_grad():
+        outputs = model(**inputs)
+
+    start_logits = outputs.start_logits
+    end_logits = outputs.end_logits
+    input_ids = inputs["input_ids"][0]
+
+
+    no_answer_score = (start_logits[0][0] + end_logits[0][0]).item()
+
+
+    start = torch.argmax(start_logits, dim=1)
+    end = torch.argmax(end_logits, dim=1) + 1
+    score = (start_logits[0][start] + end_logits[0][end - 1]).item()
+
+    if score - no_answer_score < threshold:
+        return ""
+    else:
+        return tokenizer.decode(input_ids[start:end], skip_special_tokens=True)
+
+dataset = load_dataset('squad_v2', split='validation[:1%]')
+
+
+def evaluate(model, tokenizer, dataset):
+    f1s, ems = [], []
+
+    for item in tqdm(dataset):
+        context = item['context']
+        question = item['question']
+        true_answers = item['answers']['text']
+        pred = AQ_with_threshold(context, question)
+
+        f1 = max([compute_f1(pred, ans) for ans in true_answers]) if true_answers else int(pred == "")
+        em = int(pred.strip().lower() in [ans.strip().lower() for ans in true_answers]) if true_answers else int(pred == "")
+
+        f1s.append(f1)
+        ems.append(em)
+
+    print(f"Exact Match Accuracy: {np.mean(ems) * 100:.2f}%")
+    print(f"F1 Score: {np.mean(f1s) * 100:.2f}%")
+
+evaluate(model, tokenizer, dataset)
